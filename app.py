@@ -231,7 +231,7 @@ def send_to_airtable(data: dict):
 # ── UI ────────────────────────────────────────────────────────
 st.set_page_config(page_title="Event Extractor", page_icon="🎤", layout="centered")
 
-st.title("Saga Event Extractor → Airtable")
+st.title("Event Extractor → Airtable")
 st.caption("Paste an event website URL and send the extracted event to Airtable.")
 
 with st.form("event_form"):

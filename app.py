@@ -17,7 +17,7 @@ AIRTABLE_BASE_ID = st.secrets["AIRTABLE_BASE_ID"]
 AIRTABLE_TABLE_ID = st.secrets["AIRTABLE_TABLE_ID"]
 
 AIRTABLE_URL = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_ID}"
-#DEFAULT_URL = "https://saastrlondon.com/"
+DEFAULT_URL = "https://saastrlondon.com/"
 
 
 # ── INIT GEMINI ───────────────────────────────────────────────

@@ -86,17 +86,29 @@ def is_valid_url(url: str) -> bool:
 
 
 def fetch_with_firecrawl(url: str) -> str:
+    print(f"→ Firecrawl fetcht: {url}")
+
     if not is_valid_url(url):
         raise ValueError(f"Invalid URL: {url}")
 
     app = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
-    result = app.scrape(url, formats=["markdown"])
+
+    # Support both current and older SDK variants
+    if hasattr(app, "scrape"):
+        result = app.scrape(url, formats=["markdown"])
+    elif hasattr(app, "scrape_url"):
+        result = app.scrape_url(url, formats=["markdown"])
+    else:
+        raise AttributeError("Neither 'scrape' nor 'scrape_url' exists on FirecrawlApp")
 
     markdown = getattr(result, "markdown", "")
+    if not markdown and isinstance(result, dict):
+        markdown = result.get("markdown", "")
 
     if not markdown:
         raise ValueError("No markdown returned from Firecrawl")
 
+    print(f"  ✓ {len(markdown)} Zeichen Markdown erhalten")
     return markdown
 
 

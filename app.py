@@ -229,7 +229,7 @@ def send_to_airtable(data: dict):
 
 
 # ── UI ────────────────────────────────────────────────────────
-st.set_page_config(page_title="Saga Event Extractor", page_icon="🎤", layout="centered")
+st.set_page_config(page_title="Event Extractor", page_icon="🎤", layout="centered")
 
 st.title("Saga Event Extractor → Airtable")
 st.caption("Paste an event website URL and send the extracted event to Airtable.")
@@ -243,22 +243,46 @@ if submitted:
         st.error("Invalid URL.")
     else:
         try:
-            with st.spinner("Fetching website..."):
-                markdown = fetch_with_firecrawl(url)
+            # 🔥 Progress UI
+            progress = st.progress(0)
+            status = st.empty()
 
-            with st.spinner("Extracting event data..."):
-                data = extract_with_gemini(markdown, url)
+            # ── STEP 1: FETCH ─────────────────────
+            status.write("🔎 Fetching website...")
+            progress.progress(10)
+
+            markdown = fetch_with_firecrawl(url)
+
+            progress.progress(35)
+
+            # ── STEP 2: EXTRACT ───────────────────
+            status.write("🤖 Extracting event data...")
+            data = extract_with_gemini(markdown, url)
+
+            progress.progress(65)
 
             if "error" in data:
+                progress.progress(100)
+                status.write("❌ Extraction failed")
                 st.error("JSON parse failed.")
                 st.code(data.get("raw", ""), language="json")
+
             else:
+                # ── STEP 3: CLEAN ───────────────────
+                status.write("🧹 Cleaning data...")
                 data = enrich_location_fields(data)
                 data = normalize_event_type(data)
 
-                with st.spinner("Sending to Airtable..."):
-                    response = send_to_airtable(data)
+                progress.progress(80)
 
+                # ── STEP 4: SEND ────────────────────
+                status.write("📤 Sending to Airtable...")
+                response = send_to_airtable(data)
+
+                progress.progress(100)
+                status.write("✅ Done")
+
+                # ── RESULT ──────────────────────────
                 if response.status_code in [200, 201]:
                     st.success("Successfully saved to Airtable.")
                 else:
@@ -268,4 +292,6 @@ if submitted:
                     st.json(data)
 
         except Exception as e:
+            progress.progress(100)
+            status.write("❌ Error occurred")
             st.exception(e)

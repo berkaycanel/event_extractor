@@ -132,6 +132,16 @@ Extrahiere die Event-Daten aus folgendem Inhalt:
 
     try:
         data = json.loads(raw)
+
+        if isinstance(data, list):
+            if len(data) > 0:
+                data = data[0]
+            else:
+                return {"error": "Empty list returned"}
+
+        if not isinstance(data, dict):
+            return {"error": "Unexpected format", "raw": raw}
+    
         data["url"] = url
         data.setdefault("event_source", "Event Own Website")
         data.setdefault("tags", [])

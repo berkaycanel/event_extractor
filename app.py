@@ -254,7 +254,7 @@ if st.button("Execute"):
                 if isinstance(data, dict):
                     st.code(data.get("raw", ""), language="json")
                 else:
-                    st.write(data))
+                    st.write(data)
             else:
                 data = enrich_location_fields(data)
                 data = normalize_event_type(data)

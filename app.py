@@ -3,7 +3,7 @@ import json
 import re
 import requests
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import google.generativeai as genai
 from firecrawl import FirecrawlApp
@@ -46,6 +46,11 @@ WICHTIG:
 event_type MUSS einer dieser Werte sein:
 ["Konferenz/Summit", "Workshop/Hackathon", "Meetup/Networking", "Webinar", "Pitch", "Expo/Messe", "Award", "Collaboration"]
 
+WICHTIG:
+- Sponsoren/Partner müssen möglichst vollständig extrahiert werden
+- Auch Inhalte aus Unterseiten wie /partners oder /sponsors berücksichtigen
+- Alle Sponsoren sammeln (nicht nur Premium)
+
 Schema:
 {
   "url": "",
@@ -59,22 +64,8 @@ Schema:
   "description": "",
   "tags": [],
   "event_source": "Event Own Website",
-  "speakers": [
-    {
-      "name": "",
-      "title": "",
-      "company": "",
-      "topic": "",
-      "linkedin": ""
-    }
-  ],
-  "sponsors": [
-    {
-      "name": "",
-      "tier": "",
-      "website": ""
-    }
-  ]
+  "speakers": [],
+  "sponsors": []
 }
 """
 
@@ -85,74 +76,89 @@ def is_valid_url(url: str) -> bool:
     return parsed.scheme in ("http", "https") and parsed.netloc
 
 
+def build_candidate_urls(base_url: str):
+    base = base_url.rstrip("/")
+    paths = ["", "/partners", "/sponsors", "/agenda", "/speakers"]
+
+    urls = []
+    for p in paths:
+        urls.append(urljoin(base + "/", p.lstrip("/")))
+
+    return list(dict.fromkeys(urls))
+
+
+# ── FIRECRAWL ─────────────────────────────────────────────────
 def fetch_with_firecrawl(url: str) -> str:
-    print(f"→ Firecrawl fetcht: {url}")
-
-    if not is_valid_url(url):
-        raise ValueError(f"Invalid URL: {url}")
-
     app = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
 
-    # Support both current and older SDK variants
     if hasattr(app, "scrape"):
         result = app.scrape(url, formats=["markdown"])
     elif hasattr(app, "scrape_url"):
         result = app.scrape_url(url, formats=["markdown"])
     else:
-        raise AttributeError("Neither 'scrape' nor 'scrape_url' exists on FirecrawlApp")
+        raise Exception("Firecrawl method not found")
 
     markdown = getattr(result, "markdown", "")
     if not markdown and isinstance(result, dict):
         markdown = result.get("markdown", "")
 
-    if not markdown:
-        raise ValueError("No markdown returned from Firecrawl")
-
-    print(f"  ✓ {len(markdown)} Zeichen Markdown erhalten")
     return markdown
 
 
-def extract_with_gemini(markdown: str, url: str) -> dict:
+def fetch_multiple_pages(url: str):
+    pages = {}
+    for u in build_candidate_urls(url):
+        try:
+            md = fetch_with_firecrawl(u)
+            if md and len(md) > 200:
+                pages[u] = md
+        except:
+            pass
+    return pages
+
+
+# ── GEMINI EXTRACTION ─────────────────────────────────────────
+def extract_with_gemini(pages: dict, url: str):
+    combined = ""
+
+    for u, md in pages.items():
+        combined += f"\n\n=== PAGE: {u} ===\n{md}"
+
     prompt = f"""
 Website URL: {url}
 
-Extrahiere die Event-Daten aus folgendem Inhalt:
+Extrahiere Event-Daten aus ALLEN folgenden Seiten:
 
----
-
-{markdown}
+{combined}
 """
 
-    response = model.generate_content([
-        SYSTEM_PROMPT,
-        prompt
-    ])
-
+    response = model.generate_content([SYSTEM_PROMPT, prompt])
     raw = response.text.strip()
 
     try:
         data = json.loads(raw)
 
+        # 🔥 FIX: handle list output
         if isinstance(data, list):
-            if len(data) > 0:
-                data = data[0]
-            else:
-                return {"error": "Empty list returned"}
+            data = data[0] if data else {"error": "Empty list"}
 
         if not isinstance(data, dict):
-            return {"error": "Unexpected format", "raw": raw}
-    
+            return {"error": "Invalid format", "raw": raw}
+
         data["url"] = url
         data.setdefault("event_source", "Event Own Website")
         data.setdefault("tags", [])
         data.setdefault("speakers", [])
         data.setdefault("sponsors", [])
+
         return data
-    except json.JSONDecodeError:
+
+    except:
         return {"error": "JSON parse failed", "raw": raw}
 
 
-def enrich_location_fields(data: dict):
+# ── POST-PROCESSING ───────────────────────────────────────────
+def enrich_location_fields(data):
     loc = data.get("location_text", "")
 
     if not data.get("city") and loc:
@@ -160,57 +166,30 @@ def enrich_location_fields(data: dict):
         if parts:
             data["city"] = parts[0].strip()
 
-    if not data.get("country") and loc:
-        loc_lower = loc.lower()
-
-        if "switzerland" in loc_lower:
-            data["country"] = "Switzerland"
-        elif "germany" in loc_lower:
-            data["country"] = "Germany"
-        elif "austria" in loc_lower:
-            data["country"] = "Austria"
-
     return data
 
 
-VALID_TYPES = [
-    "Konferenz/Summit",
-    "Workshop/Hackathon",
-    "Meetup/Networking",
-    "Webinar",
-    "Pitch",
-    "Expo/Messe",
-    "Award",
-    "Collaboration"
-]
-
-
-def normalize_event_type(data: dict):
-    if data.get("event_type") not in VALID_TYPES:
+def normalize_event_type(data):
+    VALID = [
+        "Konferenz/Summit", "Workshop/Hackathon", "Meetup/Networking",
+        "Webinar", "Pitch", "Expo/Messe", "Award", "Collaboration"
+    ]
+    if data.get("event_type") not in VALID:
         data["event_type"] = ""
     return data
 
 
 def clean_date(value):
-    if not value or str(value).strip() == "":
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).strftime("%Y-%m-%d")
+    except:
         return None
 
-    try:
-        dt = datetime.fromisoformat(value)
-        return dt.strftime("%Y-%m-%d")
-    except Exception:
-        pass
 
-    try:
-        dt = datetime.strptime(value, "%Y-%m-%d")
-        return dt.strftime("%Y-%m-%d")
-    except Exception:
-        pass
-
-    return None
-
-
-def send_to_airtable(data: dict):
+# ── AIRTABLE ──────────────────────────────────────────────────
+def send_to_airtable(data):
     headers = {
         "Authorization": f"Bearer {AIRTABLE_API_KEY}",
         "Content-Type": "application/json"
@@ -229,79 +208,65 @@ def send_to_airtable(data: dict):
             "description": data.get("description"),
             "tags": ", ".join(data.get("tags", [])),
             "Event Source": data.get("event_source"),
-            "Speakers": json.dumps(data.get("speakers", []), ensure_ascii=False),
-            "Sponsors": json.dumps(data.get("sponsors", []), ensure_ascii=False),
+            "Speakers": json.dumps(data.get("speakers", [])),
+            "Sponsors": json.dumps(data.get("sponsors", [])),
         }
     }
 
-    response = requests.post(AIRTABLE_URL, headers=headers, json=record, timeout=60)
-    return response
+    return requests.post(AIRTABLE_URL, headers=headers, json=record)
 
 
 # ── UI ────────────────────────────────────────────────────────
-st.set_page_config(page_title="Event Extractor", page_icon="🎤", layout="centered")
+st.set_page_config(page_title="Event Extractor", page_icon="🎤")
 
 st.title("Event Extractor → Airtable")
-st.caption("Paste an event website URL and send the extracted event to Airtable.")
 
-with st.form("event_form"):
-    url = st.text_input("Event URL", value=DEFAULT_URL, placeholder="https://example.com/event")
-    submitted = st.form_submit_button("Execute", use_container_width=True)
+url = st.text_input("Event URL", value=DEFAULT_URL)
 
-if submitted:
+if st.button("Execute"):
+
     if not is_valid_url(url):
-        st.error("Invalid URL.")
+        st.error("Invalid URL")
     else:
         try:
-            # 🔥 Progress UI
             progress = st.progress(0)
             status = st.empty()
 
-            # ── STEP 1: FETCH ─────────────────────
-            status.write("🔎 Fetching website...")
-            progress.progress(10)
+            status.write("Fetching pages...")
+            progress.progress(20)
 
-            markdown = fetch_with_firecrawl(url)
+            pages = fetch_multiple_pages(url)
 
-            progress.progress(35)
+            status.write(f"Fetched {len(pages)} pages")
+            progress.progress(40)
 
-            # ── STEP 2: EXTRACT ───────────────────
-            status.write("🤖 Extracting event data...")
-            data = extract_with_gemini(markdown, url)
+            status.write("Extracting data...")
+            data = extract_with_gemini(pages, url)
 
-            progress.progress(65)
+            progress.progress(70)
 
             if "error" in data:
-                progress.progress(100)
-                status.write("❌ Extraction failed")
-                st.error("JSON parse failed.")
-                st.code(data.get("raw", ""), language="json")
-
+                st.error("Extraction failed")
+                st.code(data.get("raw", ""))
             else:
-                # ── STEP 3: CLEAN ───────────────────
-                status.write("🧹 Cleaning data...")
                 data = enrich_location_fields(data)
                 data = normalize_event_type(data)
 
-                progress.progress(80)
+                status.write("Sending to Airtable...")
+                progress.progress(90)
 
-                # ── STEP 4: SEND ────────────────────
-                status.write("📤 Sending to Airtable...")
-                response = send_to_airtable(data)
+                res = send_to_airtable(data)
 
                 progress.progress(100)
-                status.write("✅ Done")
+                status.write("Done")
 
-                # ── RESULT ──────────────────────────
-                if response.status_code in [200, 201]:
-                    st.success("Successfully saved to Airtable.")
+                if res.status_code in [200, 201]:
+                    st.success("Saved to Airtable")
                 else:
-                    st.error(f"{response.status_code} {response.text}")
+                    st.error(res.text)
 
-                with st.expander("Preview extracted JSON"):
-                    st.json(data)
+                st.json(data)
 
         except Exception as e:
             progress.progress(100)
-            status.write("❌ Error occurred")
-            st.exception(e)
+            st.error(str(e))

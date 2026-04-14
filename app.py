@@ -245,9 +245,16 @@ if st.button("Execute"):
 
             progress.progress(70)
 
-            if "error" in data:
+            if not isinstance(data, dict) or data.get("error"):
+                progress.progress(100)
+                status.write("❌ Extraction failed")
+            
                 st.error("Extraction failed")
-                st.code(data.get("raw", ""))
+            
+                if isinstance(data, dict):
+                    st.code(data.get("raw", ""), language="json")
+                else:
+                    st.write(data))
             else:
                 data = enrich_location_fields(data)
                 data = normalize_event_type(data)

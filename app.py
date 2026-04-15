@@ -40,16 +40,13 @@ WICHTIG:
 - Gib ausschließlich valides JSON zurück
 - KEIN zusätzlicher Text
 - KEINE Halluzinationen
-- ISO Datetime Format: YYYY-MM-DDTHH:MM:SS
-- Wenn unsicher → leer ""
 
 event_type MUSS einer dieser Werte sein:
 ["Konferenz/Summit", "Workshop/Hackathon", "Meetup/Networking", "Webinar", "Pitch", "Expo/Messe", "Award", "Collaboration"]
 
 WICHTIG:
-- Sponsoren/Partner müssen möglichst vollständig extrahiert werden
-- Auch Inhalte aus Unterseiten wie /partners oder /sponsors berücksichtigen
-- Alle Sponsoren sammeln (nicht nur Premium)
+- Sponsoren müssen möglichst vollständig extrahiert werden
+- Auch Inhalte aus /partners oder /sponsors berücksichtigen
 
 Schema:
 {
@@ -78,13 +75,19 @@ def is_valid_url(url: str) -> bool:
 
 def build_candidate_urls(base_url: str):
     base = base_url.rstrip("/")
-    paths = ["", "/partners", "/sponsors", "/agenda", "/speakers"]
+    paths = [
+        "",
+        "/partners",
+        "/sponsors",
+        "/agenda",
+        "/speakers",
+        "/speaker",
+        "/vortragende",
+        "/referenten",
+        "/faculty"
+    ]
 
-    urls = []
-    for p in paths:
-        urls.append(urljoin(base + "/", p.lstrip("/")))
-
-    return list(dict.fromkeys(urls))
+    return list(dict.fromkeys([urljoin(base + "/", p.lstrip("/")) for p in paths]))
 
 
 # ── FIRECRAWL ─────────────────────────────────────────────────
@@ -93,10 +96,8 @@ def fetch_with_firecrawl(url: str) -> str:
 
     if hasattr(app, "scrape"):
         result = app.scrape(url, formats=["markdown"])
-    elif hasattr(app, "scrape_url"):
-        result = app.scrape_url(url, formats=["markdown"])
     else:
-        raise Exception("Firecrawl method not found")
+        result = app.scrape_url(url, formats=["markdown"])
 
     markdown = getattr(result, "markdown", "")
     if not markdown and isinstance(result, dict):
@@ -120,7 +121,6 @@ def fetch_multiple_pages(url: str):
 # ── GEMINI EXTRACTION ─────────────────────────────────────────
 def extract_with_gemini(pages: dict, url: str):
     combined = ""
-
     for u, md in pages.items():
         combined += f"\n\n=== PAGE: {u} ===\n{md}"
 
@@ -138,7 +138,6 @@ Extrahiere Event-Daten aus ALLEN folgenden Seiten:
     try:
         data = json.loads(raw)
 
-        # 🔥 FIX: handle list output
         if isinstance(data, list):
             data = data[0] if data else {"error": "Empty list"}
 
@@ -155,6 +154,24 @@ Extrahiere Event-Daten aus ALLEN folgenden Seiten:
 
     except:
         return {"error": "JSON parse failed", "raw": raw}
+
+
+# ── NEW: SPEAKER EXTRACTION (RULE-BASED) ───────────────────────
+def extract_speakers_from_pages(pages: dict):
+    speakers = set()
+
+    for url, md in pages.items():
+        if any(x in url.lower() for x in ["speaker", "vortrag", "referent", "faculty"]):
+            lines = md.split("\n")
+
+            for line in lines:
+                line = line.strip()
+
+                if 3 < len(line) < 80:
+                    if not any(x in line.lower() for x in ["http", "cookie", "login"]):
+                        speakers.add(line)
+
+    return [{"name": s} for s in list(speakers)[:100]]
 
 
 # ── POST-PROCESSING ───────────────────────────────────────────
@@ -188,6 +205,10 @@ def clean_date(value):
         return None
 
 
+def get_current_timestamp():
+    return datetime.utcnow().isoformat()
+
+
 # ── AIRTABLE ──────────────────────────────────────────────────
 def send_to_airtable(data):
     headers = {
@@ -210,6 +231,7 @@ def send_to_airtable(data):
             "Event Source": data.get("event_source"),
             "Speakers": json.dumps(data.get("speakers", [])),
             "Sponsors": json.dumps(data.get("sponsors", [])),
+            "Zeitpunkt der Erstellung": get_current_timestamp(),
         }
     }
 
@@ -248,14 +270,24 @@ if st.button("Execute"):
             if not isinstance(data, dict) or data.get("error"):
                 progress.progress(100)
                 status.write("❌ Extraction failed")
-            
+
                 st.error("Extraction failed")
-            
+
                 if isinstance(data, dict):
                     st.code(data.get("raw", ""), language="json")
                 else:
                     st.write(data)
+
             else:
+                # 🔥 ADDITION: merge speakers
+                extra_speakers = extract_speakers_from_pages(pages)
+
+                existing = set([s.get("name") for s in data.get("speakers", []) if isinstance(s, dict)])
+
+                for sp in extra_speakers:
+                    if sp["name"] not in existing:
+                        data["speakers"].append(sp)
+
                 data = enrich_location_fields(data)
                 data = normalize_event_type(data)
 

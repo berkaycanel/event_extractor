@@ -183,54 +183,52 @@ Extrahiere Event-Daten aus ALLEN folgenden Seiten:
     except:
         return {"error": "JSON parse failed", "raw": raw}
         
-def split_name_company(line: str):
-    if "," in line:
-        parts = line.split(",", 1)
-        return {
-            "name": parts[0].strip(),
-            "company": parts[1].strip()
-        }
-    return {"name": line}
-
 def is_valid_speaker_line(line: str) -> bool:
     line_lower = line.lower()
 
-    # ❌ reject obvious garbage
+    # ❌ reject garbage / UI / system messages
     blacklist = [
         "cookie", "login", "search", "finden", "nichts gefunden",
-        "business-event", "überprüfen", "versuchen", "#", "**", "[", "]"
+        "entschuldigung", "nicht verfügbar", "neue suche",
+        "business-event", "überprüfen", "versuchen",
+        "kongress", "event", "startseite"
     ]
 
     if any(b in line_lower for b in blacklist):
         return False
 
-    # ❌ reject markdown / UI junk
-    if line.startswith("#") or line.startswith("-"):
+    # ❌ markdown / formatting junk
+    if any(x in line for x in ["#", "*", "[", "]", "\\"]):
         return False
 
+    # ❌ too short or too long
     if len(line) < 5 or len(line) > 100:
         return False
 
-    # ✅ must look like a person (contains comma or 2+ words)
-    if "," in line:
-        return True
+    # ❌ must contain comma (strong signal)
+    if "," not in line:
+        return False
 
-    if len(line.split()) >= 2:
-        return True
-
-    return False
+    return True
 
 
-def clean_speaker_name(line: str) -> str:
-    # remove markdown artifacts
-    line = re.sub(r"\[|\]|\*|\\", "", line)
-    line = line.strip()
+def split_name_company(line: str):
+    parts = line.split(",", 1)
 
-    return line
+    name = parts[0].strip()
+    company = parts[1].strip()
+
+    # cleanup
+    company = company.replace("@", "").strip()
+
+    return {
+        "name": name,
+        "company": company
+    }
 
 
 def extract_speakers_from_pages(pages: dict):
-    speakers = set()
+    speakers = {}
 
     for url, md in pages.items():
         if any(x in url.lower() for x in ["speaker", "vortrag", "referent", "faculty"]):
@@ -239,10 +237,12 @@ def extract_speakers_from_pages(pages: dict):
                 line = line.strip()
 
                 if is_valid_speaker_line(line):
-                    clean = clean_speaker_name(line)
-                    speakers.add(clean)
+                    speaker = split_name_company(line)
 
-    return [split_name_company(s) for s in sorted(speakers)]
+                    # deduplicate by name
+                    speakers[speaker["name"]] = speaker
+
+    return list(speakers.values())
 
 
 # ── POST-PROCESSING ───────────────────────────────────────────

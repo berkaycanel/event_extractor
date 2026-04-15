@@ -186,47 +186,44 @@ Extrahiere Event-Daten aus ALLEN folgenden Seiten:
 def is_valid_speaker_line(line: str) -> bool:
     line_lower = line.lower()
 
+    # ❌ reject garbage / UI / system messages
     blacklist = [
         "cookie", "login", "search", "finden", "nichts gefunden",
         "entschuldigung", "nicht verfügbar", "neue suche",
         "business-event", "überprüfen", "versuchen",
-        "startseite"
+        "kongress", "event", "startseite"
     ]
 
     if any(b in line_lower for b in blacklist):
         return False
 
-    # remove markdown noise
+    # ❌ markdown / formatting junk
     if any(x in line for x in ["#", "*", "[", "]", "\\"]):
         return False
 
-    if len(line) < 5 or len(line) > 120:
+    # ❌ too short or too long
+    if len(line) < 5 or len(line) > 100:
         return False
 
-    # must contain at least 2 words (likely a name)
-    if len(line.split()) < 2:
+    # ❌ must contain comma (strong signal)
+    if "," not in line:
         return False
 
     return True
 
 
 def split_name_company(line: str):
-    line = line.strip()
+    parts = line.split(",", 1)
 
-    # clean artifacts
-    line = re.sub(r"\[|\]|\*|\\", "", line)
+    name = parts[0].strip()
+    company = parts[1].strip()
 
-    if "," in line:
-        parts = line.split(",", 1)
-        return {
-            "name": parts[0].strip(),
-            "company": parts[1].strip()
-        }
+    # cleanup
+    company = company.replace("@", "").strip()
 
-    # fallback: no company
     return {
-        "name": line.strip(),
-        "company": ""
+        "name": name,
+        "company": company
     }
 
 
@@ -242,7 +239,7 @@ def extract_speakers_from_pages(pages: dict):
                 if is_valid_speaker_line(line):
                     speaker = split_name_company(line)
 
-                    # dedupe by name
+                    # deduplicate by name
                     speakers[speaker["name"]] = speaker
 
     return list(speakers.values())
@@ -349,7 +346,12 @@ if st.button("Execute"):
 
             else:
                 # 🔥 merge speakers
-                data["speakers"] = extract_speakers_from_pages(pages)
+                extra = extract_speakers_from_pages(pages)
+                existing = set([s.get("name") for s in data.get("speakers", []) if isinstance(s, dict)])
+
+                for sp in extra:
+                    if sp["name"] not in existing:
+                        data["speakers"].append(sp)
 
                 data = enrich_location_fields(data)
                 data = normalize_event_type(data)

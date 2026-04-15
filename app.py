@@ -338,7 +338,9 @@ if st.button("Execute"):
 
             progress.progress(70)
 
-            if not isinstance(data, dict) or data.get("error"):
+            if not isinstance(data, dict) or (
+                "error" in data and data["error"] not in [None, "", False]
+            ):
                 progress.progress(100)
                 status.write("❌ Extraction failed")
                 st.error("Extraction failed")
@@ -360,6 +362,8 @@ if st.button("Execute"):
                 progress.progress(90)
 
                 res = send_to_airtable(data)
+                st.write("Airtable status:", res.status_code)
+                st.write("Airtable response:", res.text)
 
                 progress.progress(100)
                 status.write("Done")

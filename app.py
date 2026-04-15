@@ -346,12 +346,7 @@ if st.button("Execute"):
 
             else:
                 # 🔥 merge speakers
-                extra = extract_speakers_from_pages(pages)
-                existing = set([s.get("name") for s in data.get("speakers", []) if isinstance(s, dict)])
-
-                for sp in extra:
-                    if sp["name"] not in existing:
-                        data["speakers"].append(sp)
+                data["speakers"] = extract_speakers_from_pages(pages)
 
                 data = enrich_location_fields(data)
                 data = normalize_event_type(data)

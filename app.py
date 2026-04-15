@@ -182,9 +182,53 @@ Extrahiere Event-Daten aus ALLEN folgenden Seiten:
 
     except:
         return {"error": "JSON parse failed", "raw": raw}
+        
+def split_name_company(line: str):
+    if "," in line:
+        parts = line.split(",", 1)
+        return {
+            "name": parts[0].strip(),
+            "company": parts[1].strip()
+        }
+    return {"name": line}
+
+def is_valid_speaker_line(line: str) -> bool:
+    line_lower = line.lower()
+
+    # ❌ reject obvious garbage
+    blacklist = [
+        "cookie", "login", "search", "finden", "nichts gefunden",
+        "business-event", "überprüfen", "versuchen", "#", "**", "[", "]"
+    ]
+
+    if any(b in line_lower for b in blacklist):
+        return False
+
+    # ❌ reject markdown / UI junk
+    if line.startswith("#") or line.startswith("-"):
+        return False
+
+    if len(line) < 5 or len(line) > 100:
+        return False
+
+    # ✅ must look like a person (contains comma or 2+ words)
+    if "," in line:
+        return True
+
+    if len(line.split()) >= 2:
+        return True
+
+    return False
 
 
-# 🔥 EXTRA SPEAKER EXTRACTION
+def clean_speaker_name(line: str) -> str:
+    # remove markdown artifacts
+    line = re.sub(r"\[|\]|\*|\\", "", line)
+    line = line.strip()
+
+    return line
+
+
 def extract_speakers_from_pages(pages: dict):
     speakers = set()
 
@@ -194,11 +238,11 @@ def extract_speakers_from_pages(pages: dict):
             for line in md.split("\n"):
                 line = line.strip()
 
-                if 3 < len(line) < 80:
-                    if not any(x in line.lower() for x in ["http", "cookie", "login"]):
-                        speakers.add(line)
+                if is_valid_speaker_line(line):
+                    clean = clean_speaker_name(line)
+                    speakers.add(clean)
 
-    return [{"name": s} for s in list(speakers)[:100]]
+    return [split_name_company(s) for s in sorted(speakers)]
 
 
 # ── POST-PROCESSING ───────────────────────────────────────────
@@ -230,6 +274,7 @@ def clean_date(value):
         return None
 
 
+    
 def get_current_timestamp():
     return datetime.utcnow().isoformat()
 

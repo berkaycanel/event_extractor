@@ -75,6 +75,7 @@ def is_valid_url(url: str) -> bool:
 
 def build_candidate_urls(base_url: str):
     base = base_url.rstrip("/")
+
     paths = [
         "",
         "/partners",
@@ -87,7 +88,12 @@ def build_candidate_urls(base_url: str):
         "/faculty"
     ]
 
-    return list(dict.fromkeys([urljoin(base + "/", p.lstrip("/")) for p in paths]))
+    urls = [urljoin(base + "/", p.lstrip("/")) for p in paths]
+
+    # 🔥 FORCE important case
+    urls.append(base + "/vortragende/")
+
+    return list(dict.fromkeys(urls))
 
 
 # ── FIRECRAWL ─────────────────────────────────────────────────
@@ -106,15 +112,37 @@ def fetch_with_firecrawl(url: str) -> str:
     return markdown
 
 
+# 🔥 HTML FALLBACK
+def fetch_html_fallback(url: str):
+    try:
+        res = requests.get(url, timeout=10)
+        if res.status_code == 200:
+            return res.text
+    except:
+        pass
+    return ""
+
+
 def fetch_multiple_pages(url: str):
     pages = {}
-    for u in build_candidate_urls(url):
+    candidates = build_candidate_urls(url)
+
+    for u in candidates:
         try:
             md = fetch_with_firecrawl(u)
-            if md and len(md) > 200:
+
+            # 🔥 fallback if Firecrawl weak
+            if not md or len(md) < 100:
+                html = fetch_html_fallback(u)
+                if html:
+                    md = html
+
+            if md:
                 pages[u] = md
-        except:
-            pass
+
+        except Exception as e:
+            print(f"FAILED {u}: {e}")
+
     return pages
 
 
@@ -156,15 +184,14 @@ Extrahiere Event-Daten aus ALLEN folgenden Seiten:
         return {"error": "JSON parse failed", "raw": raw}
 
 
-# ── NEW: SPEAKER EXTRACTION (RULE-BASED) ───────────────────────
+# 🔥 EXTRA SPEAKER EXTRACTION
 def extract_speakers_from_pages(pages: dict):
     speakers = set()
 
     for url, md in pages.items():
         if any(x in url.lower() for x in ["speaker", "vortrag", "referent", "faculty"]):
-            lines = md.split("\n")
 
-            for line in lines:
+            for line in md.split("\n"):
                 line = line.strip()
 
                 if 3 < len(line) < 80:
@@ -177,12 +204,10 @@ def extract_speakers_from_pages(pages: dict):
 # ── POST-PROCESSING ───────────────────────────────────────────
 def enrich_location_fields(data):
     loc = data.get("location_text", "")
-
     if not data.get("city") and loc:
         parts = re.split(r",|\|", loc)
         if parts:
             data["city"] = parts[0].strip()
-
     return data
 
 
@@ -259,7 +284,8 @@ if st.button("Execute"):
 
             pages = fetch_multiple_pages(url)
 
-            status.write(f"Fetched {len(pages)} pages")
+            st.write("Fetched pages:", list(pages.keys()))
+
             progress.progress(40)
 
             status.write("Extracting data...")
@@ -270,21 +296,15 @@ if st.button("Execute"):
             if not isinstance(data, dict) or data.get("error"):
                 progress.progress(100)
                 status.write("❌ Extraction failed")
-
                 st.error("Extraction failed")
-
-                if isinstance(data, dict):
-                    st.code(data.get("raw", ""), language="json")
-                else:
-                    st.write(data)
+                st.code(data.get("raw", ""), language="json")
 
             else:
-                # 🔥 ADDITION: merge speakers
-                extra_speakers = extract_speakers_from_pages(pages)
-
+                # 🔥 merge speakers
+                extra = extract_speakers_from_pages(pages)
                 existing = set([s.get("name") for s in data.get("speakers", []) if isinstance(s, dict)])
 
-                for sp in extra_speakers:
+                for sp in extra:
                     if sp["name"] not in existing:
                         data["speakers"].append(sp)
 
